@@ -1,0 +1,5 @@
+swin_pretrained_models/*
+dataset/*
+ckpts/*
+vadepthnet/__pycache__
+vadepthnet/models/*
