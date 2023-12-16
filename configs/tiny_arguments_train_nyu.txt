@@ -1,6 +1,6 @@
 --mode train
 --model_name vadepthnet
---pretrain ../swin_pretrained_models/swin_small_patch4_window7_224_22k.pth
+--pretrain ../swin_pretrained_models/swin_tiny_patch4_window7_224_22k.pth
 --dataset nyu
 --data_path ../dataset/nyu_depth_v2/sync/
 --gt_path ../dataset/nyu_depth_v2/sync/
@@ -17,12 +17,12 @@
 --max_depth 10
 --do_random_rotate
 --degree 2.5
---log_directory ./models/
+--log_directory ./baseline_tiny/
 --multiprocessing_distributed
 
 --log_freq 25
 --vis_freq 50
---eval_freq 2500
+--eval_freq 1000
 --do_online_eval
 --data_path_eval ../dataset/nyu_depth_v2/official_splits/test/
 --gt_path_eval ../dataset/nyu_depth_v2/official_splits/test/

@@ -85,16 +85,6 @@ class Up(nn.Module):
             x = x1
         return self.conv(x)
 
-class OutConv(nn.Module):
-    def __init__(self, in_channels, out_channels, prior_mean = 1.54):
-        super(OutConv, self).__init__()
-
-        self.prior_mean = prior_mean
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-
-    def forward(self, x):
-        return torch.exp(self.conv(x) + self.prior_mean)
-
 
 class VarLayer(nn.Module):
     def __init__(self, in_channels, h, w):
@@ -149,7 +139,7 @@ class VarLayer(nn.Module):
         a[-1, 2, -1] = 1.0
         a[-1, 3, -1] = 1.0
 
-        self.register_buffer('a', a.unsqueeze(0))
+        self.register_buffer('a', a.unsqueeze(0)) # (1, hw, 4, hw)
 
         self.ins = nn.GroupNorm(1, self.gr)
 
@@ -165,23 +155,25 @@ class VarLayer(nn.Module):
 
     def forward(self, x):
         skip = x.clone()
-        att = self.att(x)
-        grad = self.grad(x)
+        att = self.att(x) # n, 4gr, h, w
+        grad = self.grad(x) # n, 4gr, h, w
 
 
         se = self.se(x)
 
         n, c, h, w = x.shape
 
-        att = att.reshape(n*self.gr, 4, h*w, 1).permute(0, 2, 1, 3)
-        grad = grad.reshape(n*self.gr, 4, h*w, 1).permute(0, 2, 1, 3)
-
-        A = self.a * att
-        B = grad * att
+        att = att.reshape(n*self.gr, 4, h*w, 1).permute(0, 2, 1, 3) # (n*gr, hw, 4, 1)
+        grad = grad.reshape(n*self.gr, 4, h*w, 1).permute(0, 2, 1, 3) # (n*gr, hw, 4, 1)
+        
+        # self.a = (hw, 4, hw)
+        A = self.a * att # (n*gr, hw, 4, hw)
+        B = grad * att # (n*gr, hw, 4, 1)
 
         A = A.reshape(n*self.gr, h*w*4, h*w)
         B = B.reshape(n*self.gr, h*w*4, 1)
-
+        
+        # solve Ax = B
         AT = A.permute(0, 2, 1)
 
         ATA = torch.bmm(AT, A)
@@ -192,11 +184,11 @@ class VarLayer(nn.Module):
 
         x = x.reshape(n, self.gr, h, w)
 
-        x = self.ins(x)
+        x = self.ins(x) # group norm over x
 
-        x = se * x
+        x = se * x # why?
 
-        x = self.post(x)
+        x = self.post(x) # (n, 8*gr, h, w)
 
         return x
 
@@ -207,6 +199,7 @@ class Refine(nn.Module):
         super(Refine, self).__init__()
 
         s = c1 + c2
+        # features, depth
         self.fw = nn.Sequential(
                 nn.Conv2d(s, s, kernel_size=3, padding=1),
                 nn.LeakyReLU(),
@@ -232,6 +225,7 @@ class MetricLayer(nn.Module):
                 nn.Linear(c, c//4),
                 nn.LeakyReLU(),
                 nn.Linear(c//4, 2))
+        # s, t
 
     def forward(self, x):
 
@@ -253,10 +247,24 @@ class VADepthNet(nn.Module):
         pretrain_img_size = img_size
         patch_size = (4, 4)
         in_chans = 3
-        embed_dim = 192
-        depths = [2, 2, 18, 2]
-        num_heads = [6, 12, 24, 48]
-        window_size = 12
+
+        # large size swin
+        # embed_dim = 192
+        # depths = [2, 2, 18, 2]
+        # num_heads = [6, 12, 24, 48]
+        # window_size = 12
+        
+        # small size swin
+        # embed_dim = 96
+        # depths = [2, 2, 18, 2]
+        # num_heads = [3, 6, 12, 24]
+        # window_size = 7
+
+        # tiny size swin
+        embed_dim = 96
+        depths = [2, 2, 6, 2]
+        num_heads = [3, 6, 12, 24]
+        window_size = 7
 
         backbone_cfg = dict(
             pretrain_img_size=pretrain_img_size,
@@ -274,11 +282,22 @@ class VADepthNet(nn.Module):
         
         self.backbone.init_weights(pretrained=pretrained)
 
-        self.up_4 = Up(1536 + 768, 512)
-        self.up_3 = Up(512 + 384, 256)
-        self.up_2 = Up(256 + 192, 64)
+        # large swin model
+        # self.up_4 = Up(1536 + 768, 512)
+        # self.up_3 = Up(512 + 384, 256)
+        # self.up_2 = Up(256 + 192, 64)
 
-        self.outc = OutConv(128, 1, self.prior_mean)
+        # small swin model
+        # self.up_4 = Up((1536//2) + (768//2), 512)
+        # self.up_3 = Up(512 + (384//2), 256)
+        # self.up_2 = Up(256 + (192//2), 64)
+
+        # tiny swin model
+        self.up_4 = Up((1536//2) + (768//2), 512)
+        self.up_3 = Up(512 + (384//2), 256)
+        self.up_2 = Up(256 + (192//2), 64)
+
+        self.outc = OutConv(128, 1, self.prior_mean) # change this?
 
         self.vlayer = VarLayer(512, img_size[0]//16, img_size[1]//16)
 
@@ -289,32 +308,47 @@ class VADepthNet(nn.Module):
         self.var_loss = VarLoss(128, 512)
         self.si_loss = SILogLoss(self.SI_loss_lambda, self.max_depth)
 
+        # large swin model
+        # self.mlayer = nn.Sequential(
+        #         nn.AdaptiveMaxPool2d((1,1)),
+        #         MetricLayer(1536))
+
+        # small swin model
+        # self.mlayer = nn.Sequential(
+        #         nn.AdaptiveMaxPool2d((1,1)),
+        #         MetricLayer(1536//2))
+
+        # tiny swin model
         self.mlayer = nn.Sequential(
                 nn.AdaptiveMaxPool2d((1,1)),
-                MetricLayer(1536))
+                MetricLayer(1536//2))
 
     def forward(self, x, gts=None):
 
         x2, x3, x4, x5 = self.backbone(x)
+        # torch.Size([8, 192, 120, 160]) torch.Size([8, 384, 60, 80]) torch.Size([8, 768, 30, 40]) torch.Size([8, 1536, 15, 20])
+        # print(x2.shape, x3.shape, x4.shape, x5.shape)
 
         outs = {}
 
-        metric = self.mlayer(x5)
+        metric = self.mlayer(x5) # (n, 2)
 
-        x = self.up_4(x5, x4)
+        x = self.up_4(x5, x4) # (scale 2*x5, x4)
         
         d = self.vlayer(x)
 
         if self.training:
+            # print("training print: ", x.shape, d.shape, gts.shape)
             var_loss = self.var_loss(x, d, gts)
 
 
-        x, d  = self.ref_4(x, d)
+        x, d  = self.ref_4(x, d) # refine feat and depth, no size change
 
         d_u4 = F.interpolate(d, scale_factor=16, mode='bilinear', align_corners=True)
 
         x = self.up_3(x, x3)
 
+        # double d and pass
         x, d = self.ref_3(x, F.interpolate(d, scale_factor=2, mode='bilinear', align_corners=True))
 
         d_u3 = F.interpolate(d, scale_factor=8, mode='bilinear', align_corners=True)
@@ -325,7 +359,7 @@ class VADepthNet(nn.Module):
 
         d_u2 = F.interpolate(d, scale_factor=4, mode='bilinear', align_corners=True)
 
-        d = d_u2 + d_u3 + d_u4
+        d = d_u2 + d_u3 + d_u4 # change this?
 
         d = torch.sigmoid(metric[:, 0:1]) * (self.outc(d) + torch.exp(metric[:, 1:2]))
 
@@ -339,3 +373,12 @@ class VADepthNet(nn.Module):
 
 
 
+class OutConv(nn.Module):
+    def __init__(self, in_channels, out_channels, prior_mean = 1.54):
+        super(OutConv, self).__init__()
+
+        self.prior_mean = prior_mean
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+
+    def forward(self, x):
+        return torch.exp(self.conv(x) + self.prior_mean)

@@ -3,3 +3,13 @@ dataset/*
 ckpts/*
 vadepthnet/__pycache__
 vadepthnet/models/*
+vadepthnet/baseline_small/*
+vadepthnet/baseline_tiny/*
+vadepthnet/dataloaders/__pycache__
+vadepthnet/networks/__pycache__
+baseline_small.err
+baseline_tiny.err
+baseline_small.out
+baseline_tiny.out
+baseline_train.slurm
+vadepthnet/wandb
