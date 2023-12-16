@@ -32,6 +32,7 @@ pdepth = model.forward(img)
 # Convert depth tensor to a numpy array and normalize
 pdepth_np = pdepth.squeeze().cpu().detach().numpy()
 pdepth_np = (pdepth_np - pdepth_np.min()) / (pdepth_np.max() - pdepth_np.min())  # Normalize
+pdepth_np = 1.0 - pdepth_np
 
 # Convert the depth map to a colormap
 depth_colormap = plt.get_cmap('plasma')(pdepth_np)[:, :, :3]  # Exclude alpha channel

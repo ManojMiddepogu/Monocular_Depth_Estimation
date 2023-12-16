@@ -360,6 +360,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 for i, original_img in enumerate(original_images):
                     pdepth_np = pdepth_batch[i].squeeze().cpu().detach().numpy()
                     pdepth_np = (pdepth_np - pdepth_np.min()) / (pdepth_np.max() - pdepth_np.min())  # Normalize
+                    pdepth_np = 1.0 - pdepth_np
 
                     depth_colormap = plt.get_cmap('plasma')(pdepth_np)[:, :, :3]
                     depth_colormap = (depth_colormap * 255).astype(np.uint8)

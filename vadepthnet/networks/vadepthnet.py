@@ -249,10 +249,10 @@ class VADepthNet(nn.Module):
         in_chans = 3
 
         # large size swin
-        # embed_dim = 192
-        # depths = [2, 2, 18, 2]
-        # num_heads = [6, 12, 24, 48]
-        # window_size = 12
+        embed_dim = 192
+        depths = [2, 2, 18, 2]
+        num_heads = [6, 12, 24, 48]
+        window_size = 12
         
         # small size swin
         # embed_dim = 96
@@ -261,10 +261,10 @@ class VADepthNet(nn.Module):
         # window_size = 7
 
         # tiny size swin
-        embed_dim = 96
-        depths = [2, 2, 6, 2]
-        num_heads = [3, 6, 12, 24]
-        window_size = 7
+        # embed_dim = 96
+        # depths = [2, 2, 6, 2]
+        # num_heads = [3, 6, 12, 24]
+        # window_size = 7
 
         backbone_cfg = dict(
             pretrain_img_size=pretrain_img_size,
@@ -283,9 +283,9 @@ class VADepthNet(nn.Module):
         self.backbone.init_weights(pretrained=pretrained)
 
         # large swin model
-        # self.up_4 = Up(1536 + 768, 512)
-        # self.up_3 = Up(512 + 384, 256)
-        # self.up_2 = Up(256 + 192, 64)
+        self.up_4 = Up(1536 + 768, 512)
+        self.up_3 = Up(512 + 384, 256)
+        self.up_2 = Up(256 + 192, 64)
 
         # small swin model
         # self.up_4 = Up((1536//2) + (768//2), 512)
@@ -293,9 +293,9 @@ class VADepthNet(nn.Module):
         # self.up_2 = Up(256 + (192//2), 64)
 
         # tiny swin model
-        self.up_4 = Up((1536//2) + (768//2), 512)
-        self.up_3 = Up(512 + (384//2), 256)
-        self.up_2 = Up(256 + (192//2), 64)
+        # self.up_4 = Up((1536//2) + (768//2), 512)
+        # self.up_3 = Up(512 + (384//2), 256)
+        # self.up_2 = Up(256 + (192//2), 64)
 
         self.outc = OutConv(128, 1, self.prior_mean) # change this?
 
@@ -309,9 +309,9 @@ class VADepthNet(nn.Module):
         self.si_loss = SILogLoss(self.SI_loss_lambda, self.max_depth)
 
         # large swin model
-        # self.mlayer = nn.Sequential(
-        #         nn.AdaptiveMaxPool2d((1,1)),
-        #         MetricLayer(1536))
+        self.mlayer = nn.Sequential(
+                nn.AdaptiveMaxPool2d((1,1)),
+                MetricLayer(1536))
 
         # small swin model
         # self.mlayer = nn.Sequential(
@@ -319,9 +319,9 @@ class VADepthNet(nn.Module):
         #         MetricLayer(1536//2))
 
         # tiny swin model
-        self.mlayer = nn.Sequential(
-                nn.AdaptiveMaxPool2d((1,1)),
-                MetricLayer(1536//2))
+        # self.mlayer = nn.Sequential(
+        #         nn.AdaptiveMaxPool2d((1,1)),
+        #         MetricLayer(1536//2))
 
     def forward(self, x, gts=None):
 
