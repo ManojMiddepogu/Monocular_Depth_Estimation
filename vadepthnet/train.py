@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 
 from utils import compute_errors, eval_metrics, \
                        block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args
-from networks.vadepthnet import VADepthNet
+from networks.vadepthnet import VADepthNet, VAFlowNet
 
 
 parser = argparse.ArgumentParser(description='VADepthNet PyTorch implementation.', fromfile_prefix_chars='@')
@@ -190,12 +190,28 @@ def main_worker(gpu, ngpus_per_node, args):
                 project="monocular-depth-estimation",
                 config = args,
             )
+    
+    swin_type = args.pretrain.split("/")[-1].split("_")[1]
+    if not swin_type in ["tiny", "small", "large"]:
+        raise ValueError(f"Invalid swin model type {swin_type}!")
 
-    model = VADepthNet(pretrained=args.pretrain,
-                       max_depth=args.max_depth,
-                       prior_mean=args.prior_mean,
-                       img_size=(args.input_height, args.input_width))
+    print_memory_usage("MODEL NOT LOADED YET")
+    if args.model_name == "vadepthnet":
+        model = VADepthNet(pretrained=args.pretrain,
+                        max_depth=args.max_depth,
+                        prior_mean=args.prior_mean,
+                        img_size=(args.input_height, args.input_width),
+                        swin_type=swin_type)
+    elif args.model_name == "vaflownet":
+        model = VAFlowNet(pretrained=args.pretrain,
+                        max_depth=args.max_depth,
+                        prior_mean=args.prior_mean,
+                        img_size=(args.input_height, args.input_width),
+                        swin_type=swin_type)
+    else:
+        raise ValueError(f"Invalid model name {args.model_name}")
     model.train()
+    print_memory_usage("MODEL LOADED HERE")
 
     num_params = sum([np.prod(p.size()) for p in model.parameters()])
     print("== Total number of parameters: {}".format(num_params))
@@ -203,6 +219,7 @@ def main_worker(gpu, ngpus_per_node, args):
     num_params_update = sum([np.prod(p.shape) for p in model.parameters() if p.requires_grad])
     print("== Total number of learning parameters: {}".format(num_params_update))
 
+    print_memory_usage("MODEL BEFORE GPU HERE")
     if args.distributed:
         if args.gpu is not None:
             torch.cuda.set_device(args.gpu)
@@ -216,6 +233,8 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         model = torch.nn.DataParallel(model)
         model.cuda()
+
+    print_memory_usage("MODEL TO GPU HERE")
 
     if args.distributed:
         print("== Model Initialized on GPU: {}".format(args.gpu))
@@ -307,7 +326,9 @@ def main_worker(gpu, ngpus_per_node, args):
             image = torch.autograd.Variable(sample_batched['image'].cuda(args.gpu, non_blocking=True))
             depth_gt = torch.autograd.Variable(sample_batched['depth'].cuda(args.gpu, non_blocking=True))
 
+            # print_memory_usage("MODEL BEFORE")
             depth_est, loss = model(image, depth_gt)
+            # print_memory_usage("MODEL AFTER")
 
             loss.backward()
 
@@ -472,6 +493,16 @@ def main():
     else:
         main_worker(args.gpu, ngpus_per_node, args)
 
+def print_memory_usage(message=""):
+    """
+    Print CUDA memory usage.
+
+    Args:
+    - message: Optional message to display.
+    """
+    memory_used = torch.cuda.memory_allocated() / (1024 ** 2)
+    max_memory_used = torch.cuda.max_memory_allocated() / (1024 ** 2)
+    print(f"{message}Memory used: {memory_used:.2f} MB, Max memory used: {max_memory_used:.2f} MB")
 
 if __name__ == '__main__':
     main()

@@ -174,3 +174,81 @@ class SILogLoss(nn.Module):
             loss += (loss1)
 
         return loss
+
+
+def variance_depth_flow(gt_depth, patch_size):
+    batch_size, channels, height, width = gt_depth.size()
+
+    patches_x = width // patch_size
+    patches_y = height // patch_size
+
+    gt_depth_patches = gt_depth.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
+    # print(gt_depth_patches.shape)
+    gt_depth_patches = gt_depth_patches.contiguous().view(batch_size, channels, patches_y, patches_x, patch_size, patch_size)
+    # print(gt_depth_patches.shape)
+
+    borders_north = torch.log(gt_depth_patches[:, :, :, :, 0, :]+1e-6) #1 n,c,30,40,16
+
+    borders_south = torch.log(gt_depth_patches[:, :, :, :, -1, :]+1e-6) #3 n,c,30,40,16
+
+    borders_west = torch.log(gt_depth_patches[:, :, :, :, :, 0]+1e-6) #0 n,c,30,40,16
+
+    borders_east = torch.log(gt_depth_patches[:, :, :, :, :, -1]+1e-6) #2 - n,c,30,40,16
+#
+#     1
+#   0   2
+#     3
+#
+
+    # 0 i(2) - i+1 (0) - C
+    diff_0 = (borders_east - torch.cat([borders_west[:,:,:,1:,:], torch.zeros_like(borders_west[:,:,:,0:1,:])], dim = 3)).sum(dim=-1, keepdim=True)
+    # 1 i(3) - i+w (1) - C
+    diff_1 = (borders_south - torch.cat([borders_north[:,:,1:,:,:], torch.zeros_like(borders_north[:,:,0:1,:,:])], dim = 2)).sum(dim=-1, keepdim=True)
+    # 2 i(2) - i+1 (2) - C
+    diff_2 = (borders_east - torch.cat([borders_east[:,:,:,1:,:], torch.zeros_like(borders_east[:,:,:,0:1,:])], dim=3)).sum(dim=-1, keepdim=True)
+    # 3 i(3) - i+w (3) - C
+    diff_3 = (borders_south - torch.cat([borders_south[:,:,1:,:,:], torch.zeros_like(borders_south[:,:,0:1,:,:]) ], dim=2)).sum(dim=-1, keepdim=True)
+    # 4 i(0) - i+1 (0) - C
+    diff_4 = (borders_west - torch.cat([borders_west[:,:,:,1:,:], torch.zeros_like(borders_west[:,:,:,0:1,:])],dim=3)).sum(dim=-1, keepdim=True)
+    #5 i(1) - i+w (1) - C
+    diff_5 = (borders_north - torch.cat([borders_north[:,:,1:,:,:], torch.zeros_like(borders_north[:,:,0:1,:,:])], dim=2)).sum(dim=-1, keepdim=True)
+    #6 i(3) - i+1 (3) - C
+    diff_6 = (borders_south - torch.cat([borders_south[:,:,:,1:,:], torch.zeros_like(borders_south[:,:,:,0:1,:])], dim=3)).sum(dim=-1, keepdim=True)
+    #7 i(2) - i+w (2) - C
+    diff_7 = (borders_east - torch.cat([borders_east[:,:,1:,:,:], torch.zeros_like(borders_east[:,:,0:1,:,:])], dim=2)).sum(dim=-1, keepdim=True)
+    #8 i(1) - i+1 (1) - C
+    diff_8 = (borders_north - torch.cat([borders_north[:,:,:,1:,:], torch.zeros_like(borders_north[:,:,:,0:1,:])], dim=3)).sum(dim=-1, keepdim=True)
+    #9 i(0) - i+w (0) - C
+    diff_9 = (borders_west - torch.cat([borders_west[:,:,1:,:,:], torch.zeros_like(borders_west[:,:,0:1,:,:])], dim=2)).sum(dim=-1, keepdim=True)
+
+    diff = torch.cat([diff_0, diff_1, diff_2, diff_3, diff_4, diff_5, diff_6, diff_7, diff_8, diff_9], dim=-1).squeeze(1).permute(0,3,1,2).contiguous()
+    diff = diff.reshape(batch_size, -1, patches_y, patches_x)// patch_size
+
+    # return (n,10,h,w)
+    return diff
+
+
+class VarFlowLoss(nn.Module):
+    def __init__(self, depth_channel, feat_channel):
+        super(VarFlowLoss, self).__init__()
+
+        # (512, 128)
+        self.att = nn.Sequential(
+                nn.Conv2d(feat_channel, depth_channel, kernel_size=3, padding=1),
+                nn.Sigmoid())
+
+        self.post = nn.Conv2d(depth_channel, 10, kernel_size=3, padding=1)
+
+    # feat, depth, ground_truth
+    def forward(self, feat, depth, gts):
+        os_shape = gts.shape[2:]
+        n, c, h, w = depth.shape
+        patch_size = (os_shape[0] // h)
+
+        flow_gradient = variance_depth_flow(gts, patch_size)
+
+        att = self.att(feat)
+        ds = self.post(att * depth) #match flow gradient
+        # print(ds.shape, flow_gradient.shape)
+        diff = F.smooth_l1_loss(ds, flow_gradient, reduce=False, beta=0.01)
+        return diff.sum()/(h*w*ds.shape[0]*ds.shape[1])

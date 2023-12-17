@@ -5,7 +5,7 @@
 --data_path ../dataset/nyu_depth_v2/sync/
 --gt_path ../dataset/nyu_depth_v2/sync/
 --filenames_file ../data_splits/nyudepthv2_train_files_with_gt.txt
---batch_size 12
+--batch_size 48
 --num_epochs 50
 --learning_rate 3e-5
 --end_learning_rate 1e-5
@@ -17,7 +17,7 @@
 --max_depth 10
 --do_random_rotate
 --degree 2.5
---log_directory ./baseline_tiny/
+--log_directory ./baseline_tiny_4/
 --multiprocessing_distributed
 
 --log_freq 25
