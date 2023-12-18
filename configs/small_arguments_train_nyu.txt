@@ -21,7 +21,7 @@
 --multiprocessing_distributed
 
 --log_freq 25
---vis_freq 50
+--vis_freq 250
 --eval_freq 1000
 --do_online_eval
 --data_path_eval ../dataset/nyu_depth_v2/official_splits/test/

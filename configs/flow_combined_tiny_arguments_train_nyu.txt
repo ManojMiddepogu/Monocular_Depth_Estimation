@@ -1,5 +1,7 @@
 --mode train
 --model_name vaflownet
+--depth_resnet_connection
+--use_self_attention
 --pretrain ../swin_pretrained_models/swin_tiny_patch4_window7_224_22k.pth
 --dataset nyu
 --data_path ../dataset/nyu_depth_v2/sync/
@@ -17,7 +19,7 @@
 --max_depth 10
 --do_random_rotate
 --degree 2.5
---log_directory ./flownet_tiny/
+--log_directory ./flownet_combined_tiny/
 --multiprocessing_distributed
 
 --log_freq 25

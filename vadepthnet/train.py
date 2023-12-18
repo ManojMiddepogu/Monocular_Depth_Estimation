@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 
 from utils import compute_errors, eval_metrics, \
                        block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args
-from networks.vadepthnet import VADepthNet, VAFlowNet
+from networks.vadepthnet import VADepthNet, VAFlowNet, VAFlowNet32, ImprovedVADepthNet
 
 
 parser = argparse.ArgumentParser(description='VADepthNet PyTorch implementation.', fromfile_prefix_chars='@')
@@ -27,6 +27,8 @@ parser.convert_arg_line_to_args = convert_arg_line_to_args
 
 parser.add_argument('--mode',                      type=str,   help='train or test', default='train')
 parser.add_argument('--model_name',                type=str,   help='model name', default='vadepthnet')
+parser.add_argument('--use_self_attention',                    help='Use self attention on depths', action='store_true')
+parser.add_argument('--depth_resnet_connection',               help='Use vlayer and flayer', action='store_true')
 parser.add_argument('--pretrain',                  type=str,   help='path of pretrained encoder', default=None)
 
 # Dataset
@@ -185,8 +187,9 @@ def main_worker(gpu, ngpus_per_node, args):
     
     if args.use_wandb:
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+            wandb.login(key='1d3bfdab8059559c1286c808290e032fca67f654')
             wandb.init(
-                entity = "llvm",
+                entity = "nyu_chanukya",
                 project="monocular-depth-estimation",
                 config = args,
             )
@@ -202,16 +205,31 @@ def main_worker(gpu, ngpus_per_node, args):
                         prior_mean=args.prior_mean,
                         img_size=(args.input_height, args.input_width),
                         swin_type=swin_type)
+    elif args.model_name == "improvedvadepthnet":
+        model = ImprovedVADepthNet(pretrained=args.pretrain,
+                        max_depth=args.max_depth,
+                        prior_mean=args.prior_mean,
+                        img_size=(args.input_height, args.input_width),
+                        swin_type=swin_type)
     elif args.model_name == "vaflownet":
         model = VAFlowNet(pretrained=args.pretrain,
                         max_depth=args.max_depth,
                         prior_mean=args.prior_mean,
                         img_size=(args.input_height, args.input_width),
-                        swin_type=swin_type)
+                        swin_type=swin_type,
+                        depth_resnet_connection=args.depth_resnet_connection,
+                        use_self_attention=args.use_self_attention)
+    elif args.model_name == "vaflownet32":
+        model = VAFlowNet32(pretrained=args.pretrain,
+                        max_depth=args.max_depth,
+                        prior_mean=args.prior_mean,
+                        img_size=(args.input_height, args.input_width),
+                        swin_type=swin_type,
+                        use_self_attention=args.use_self_attention)
     else:
         raise ValueError(f"Invalid model name {args.model_name}")
     model.train()
-    print_memory_usage("MODEL LOADED HERE")
+    # print_memory_usage("MODEL LOADED HERE")
 
     num_params = sum([np.prod(p.size()) for p in model.parameters()])
     print("== Total number of parameters: {}".format(num_params))
@@ -219,7 +237,7 @@ def main_worker(gpu, ngpus_per_node, args):
     num_params_update = sum([np.prod(p.shape) for p in model.parameters() if p.requires_grad])
     print("== Total number of learning parameters: {}".format(num_params_update))
 
-    print_memory_usage("MODEL BEFORE GPU HERE")
+    # print_memory_usage("MODEL BEFORE GPU HERE")
     if args.distributed:
         if args.gpu is not None:
             torch.cuda.set_device(args.gpu)
@@ -234,7 +252,7 @@ def main_worker(gpu, ngpus_per_node, args):
         model = torch.nn.DataParallel(model)
         model.cuda()
 
-    print_memory_usage("MODEL TO GPU HERE")
+    # print_memory_usage("MODEL TO GPU HERE")
 
     if args.distributed:
         print("== Model Initialized on GPU: {}".format(args.gpu))
@@ -326,8 +344,11 @@ def main_worker(gpu, ngpus_per_node, args):
             image = torch.autograd.Variable(sample_batched['image'].cuda(args.gpu, non_blocking=True))
             depth_gt = torch.autograd.Variable(sample_batched['depth'].cuda(args.gpu, non_blocking=True))
 
+            # print("Image shape: ", image.shape)
+
             # print_memory_usage("MODEL BEFORE")
-            depth_est, loss = model(image, depth_gt)
+            depth_est, loss_dict = model(image, depth_gt)
+            loss = sum(loss_dict.values())
             # print_memory_usage("MODEL AFTER")
 
             loss.backward()
@@ -347,7 +368,10 @@ def main_worker(gpu, ngpus_per_node, args):
             if global_step % args.log_freq == 0 and gpu == 0:
                 print('epoch:', epoch, 'global_step:', global_step, 'loss:', loss.item(), 'duration:', duration, flush=True)
                 if args.use_wandb:
-                    wandb.log({"train_loss": loss.item(), "epoch": epoch, "duration": duration}, step=int(global_step))
+                    log_dict = {"train_loss": loss.item(), "epoch": epoch, "duration": duration}
+                    for k, v in loss_dict.items():
+                        log_dict[k] = v.item()
+                    wandb.log(log_dict, step=int(global_step))
             
             # if global_step and global_step % args.vis_freq == 0 and gpu == 0:
             if global_step % args.vis_freq == 0 and gpu == 0:

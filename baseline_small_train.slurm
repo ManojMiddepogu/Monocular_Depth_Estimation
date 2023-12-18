@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=baseline_small_4
 
-#SBATCH --gres=gpu:rtx8000:2
+#SBATCH --gres=gpu:a100:2
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=16GB
 
