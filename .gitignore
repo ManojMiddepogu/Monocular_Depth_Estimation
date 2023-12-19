@@ -1,7 +1,6 @@
 swin_pretrained_models/*
 dataset/*
 ckpts/*
-scripts/*
 configs/flow_combined_large_arguments_train_nyu.txt
 configs/flow_combined_tiny_arguments_train_nyu.txt
 configs/flow32_combined_tiny_arguments_train_nyu.txt
