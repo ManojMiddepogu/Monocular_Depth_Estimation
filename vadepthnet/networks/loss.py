@@ -128,17 +128,19 @@ class VarLoss(nn.Module):
         return loss_g
 
 
-class ImprovedVarLoss(nn.Module):
-    def __init__(self, depth_channel, feat_channel):
-        super(ImprovedVarLoss, self).__init__()
+class WindowVarLoss(nn.Module):
+    def __init__(self, depth_channel, feat_channel, window_size=1):
+        super(WindowVarLoss, self).__init__()
 
         self.att = nn.Sequential(
                 nn.Conv2d(feat_channel, depth_channel, kernel_size=3, padding=1),
                 nn.Sigmoid())
+        
+        self.window = window_size
 
-        self.post = nn.Conv2d(depth_channel, 6, kernel_size=3, padding=1)
+        self.post = nn.Conv2d(depth_channel, 4 * self.window, kernel_size=3, padding=1)
 
-        self.r = 30  # repeat sample
+        self.r = 5 * 4 * self.window  # repeat sample
 
     def forward(self, x, d, gts):
         loss = 0.0
@@ -151,8 +153,6 @@ class ImprovedVarLoss(nn.Module):
 
         ts_shape = d.shape[2:]
         gt = gts.clone()
-        #gt = gts.unsqueeze(1)
-        #print(gt.shape)
         os_shape = gt.shape[2:]
         n, c, h, w = d.shape
 
@@ -175,8 +175,6 @@ class ImprovedVarLoss(nn.Module):
         att = self.att(feat)
 
         ds = att * d
-        #att = att.permute(0, 2, 3, 1)
-
         #ds = F.grid_sample(input=d, grid=grid+att, mode='bilinear', align_corners=True)
 
         ds = self.post(ds)
@@ -185,7 +183,6 @@ class ImprovedVarLoss(nn.Module):
         return loss
     
     def random_pooling(self, gt_depth, shape):
-        #print(gt_depth.shape)
         n, c, h, w = gt_depth.shape
         rand = torch.rand(n, c, h, w, dtype=gt_depth.dtype, device=gt_depth.device)
         mask = gt_depth > 0.1
@@ -201,73 +198,45 @@ class ImprovedVarLoss(nn.Module):
         reshaped_gt[reshaped_gt < 0.1] = 0
         return reshaped_gt, indices
 
-    def grad(self, image):
-        def gradient_y(img):
-            gx = torch.log(img[:,:,1:-1,1:-1]+1e-6) - torch.log(img[:,:,2:,1:-1]+1e-6)
-
-            mask = img > 0.1
-            mask = torch.logical_and(mask[:,:,1:-1,1:-1], mask[:,:,2:,1:-1])
-            return gx, mask
-
-        def gradient_x(img):
-            gy = torch.log(img[:,:,1:-1,1:-1]+1e-6) - torch.log(img[:,:,1:-1,2:]+1e-6)
-
-            mask = img > 0.1
-            mask = torch.logical_and(mask[:,:,1:-1,1:-1], mask[:,:,1:-1,2:])
-            return gy, mask
-        
-        def gradient_hop_y(img):
-            gx = torch.log(img[:,:,2:-2,2:-2]+1e-6) - torch.log(img[:,:,4:,2:-2]+1e-6)
-
-            mask = img > 0.1
-            mask = torch.logical_and(mask[:,:,2:-2,2:-2], mask[:,:,4:,2:-2])
-            return gx, mask
-        
-        def gradient_hop_x(img):
-            gy = torch.log(img[:,:,2:-2,2:-2]+1e-6) - torch.log(img[:,:,2:-2,4:]+1e-6)
-
-            mask = img > 0.1
-            mask = torch.logical_and(mask[:,:,2:-2,2:-2], mask[:,:,2:-2,4:])
-            return gy, mask
-        
-        def gradient_sw(img):
-            g = torch.log(img[:,:,1:-1,1:-1]+1e-6) - torch.log(img[:,:,2:,0:-2]+1e-6)
-
-            mask = img > 0.1
-            mask = torch.logical_and(mask[:,:,1:-1,1:-1], mask[:,:,2:,0:-2])
-            return g, mask
-        
-        def gradient_se(img):
-            g = torch.log(img[:,:,1:-1,1:-1]+1e-6) - torch.log(img[:,:,2:,2:]+1e-6)
-
-            mask = img > 0.1
-            mask = torch.logical_and(mask[:,:,1:-1,1:-1], mask[:,:,2:,2:])
-            return g, mask
-
-        image1 = F.pad(image, (1,1,1,1), 'constant', 0.0)
-        image2 = F.pad(image, (2,2,2,2), 'constant', 0.0)
-
-        image_grad_x, mask_x = gradient_x(image1)
-        image_grad_y, mask_y = gradient_y(image1)
-        image_grad_hop_x, mask_hop_x = gradient_hop_x(image2)
-        image_grad_hop_y, mask_hop_y = gradient_hop_y(image2)
-        image_grad_sw, mask_sw = gradient_sw(image1)
-        image_grad_se, mask_se = gradient_se(image1)
-
-        grad_gt = torch.cat([image_grad_x, image_grad_y, image_grad_hop_x, image_grad_hop_y, image_grad_sw, image_grad_se], 1)
-        grad_mk = torch.cat([mask_x, mask_y, mask_hop_x, mask_hop_y, mask_sw, mask_se], 1)
-
-        return grad_gt, grad_mk
+    def grad(self, image, window):
+        grads = []
+        masks = []
+        mask = image > 0.1
+        for d in range(1,window+1):
+            for direction in range(0,4):
+                if direction == 0:
+                    ox, oy = 0, d
+                elif direction == 1:
+                    ox, oy = d, d
+                elif direction == 2:
+                    ox, oy = d, 0
+                else:
+                    ox, oy = d, -d
+                
+                last_x = -window+ox
+                if last_x == 0:
+                    last_x = 100000
+                last_y = -window+oy
+                if last_y == 0:
+                    last_y = 100000
+                g = torch.log(image[:,:,window:-window,window:-window]+1e-6) - torch.log(image[:,:,window+ox:last_x,window+oy:last_y]+1e-6)
+                m = torch.logical_and(mask[:,:,window:-window,window:-window], mask[:,:,window+ox:last_x,window+oy:last_y])
+                grads.append(g)
+                masks.append(m)
+        grads = torch.cat(grads, 1)
+        masks = torch.cat(masks, 1)
+        return grads, masks
 
     def loss(self, ds, reshaped_gt):
-
-        grad_gt, grad_mk = self.grad(reshaped_gt)
+        image = F.pad(reshaped_gt, (self.window,self.window,self.window,self.window), 'constant', 0.0)
+        grad_gt, grad_mk = self.grad(image, self.window)
 
         diff = F.smooth_l1_loss(ds, grad_gt, reduce=False, beta=0.01) * grad_mk
 
         loss_g =  diff.sum() / grad_mk.sum()
 
         return loss_g
+
 
 class SILogLoss(nn.Module):
     def __init__(self, SI_loss_lambda, max_depth):
@@ -325,9 +294,7 @@ def variance_depth_flow(gt_depth, patch_size, max_depth):
     patches_y = height // patch_size
 
     gt_depth_patches = gt_depth.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
-    # print(gt_depth_patches.shape)
     gt_depth_patches = gt_depth_patches.contiguous().view(batch_size, channels, patches_y, patches_x, patch_size, patch_size)
-    # print(gt_depth_patches.shape)
     gt_depth_patches = torch.where((gt_depth_patches > 0.1) * (gt_depth_patches < max_depth), gt_depth_patches, torch.zeros_like(gt_depth_patches))
 
     borders_north = torch.log(gt_depth_patches[:, :, :, :, 0, :]+1e-6) #1 n,c,30,40,16
@@ -367,7 +334,6 @@ def variance_depth_flow(gt_depth, patch_size, max_depth):
     diff = torch.cat([diff_0, diff_1, diff_2, diff_3, diff_4, diff_5, diff_6, diff_7, diff_8, diff_9], dim=-1).squeeze(1).permute(0,3,1,2).contiguous()
     diff = diff.reshape(batch_size, -1, patches_y, patches_x)/ patch_size
 
-    # return (n,10,h,w)
     return diff
 
 
@@ -375,16 +341,10 @@ class VarFlowLoss(nn.Module):
     def __init__(self, depth_channel, feat_channel, max_depth):
         super(VarFlowLoss, self).__init__()
 
-        # (512, 128)
         self.att = nn.Sequential(
                 nn.Conv2d(feat_channel, depth_channel, kernel_size=3, padding=1),
                 nn.Sigmoid())
 
-        # self.post = nn.Sequential(
-        #     nn.Conv2d(depth_channel, depth_channel, kernel_size=3, padding=1),
-        #     nn.LeakyReLU(),
-        #     nn.Conv2d(depth_channel, 10, kernel_size=3, padding=1)
-        # )
         self.post = nn.Conv2d(depth_channel, 10, kernel_size=3, padding=1)
         self.max_depth = max_depth
 
@@ -398,7 +358,5 @@ class VarFlowLoss(nn.Module):
 
         att = self.att(feat)
         ds = self.post(att * depth) #match flow gradient
-        # print(ds.shape, flow_gradient.shape)
         diff = F.smooth_l1_loss(ds, flow_gradient, reduce=False, beta=0.01)
-        # return 0.5 * diff.sum()/(h*w*ds.shape[0]*ds.shape[1])
         return diff.sum()/(h*w*ds.shape[0]*ds.shape[1])
