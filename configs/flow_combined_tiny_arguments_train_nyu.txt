@@ -1,12 +1,14 @@
 --mode train
---model_name vadepthnet
+--model_name vaflownet
+--depth_resnet_connection
+--use_self_attention
 --pretrain ../swin_pretrained_models/swin_tiny_patch4_window7_224_22k.pth
 --dataset nyu
 --data_path ../dataset/nyu_depth_v2/sync/
 --gt_path ../dataset/nyu_depth_v2/sync/
 --filenames_file ../data_splits/nyudepthv2_train_files_with_gt.txt
---batch_size 1
---num_epochs 1
+--batch_size 18
+--num_epochs 50
 --learning_rate 3e-5
 --end_learning_rate 1e-5
 --weight_decay 0.0
@@ -17,7 +19,7 @@
 --max_depth 10
 --do_random_rotate
 --degree 2.5
---log_directory ./test/
+--log_directory ./flownet_combined_tiny/
 --multiprocessing_distributed
 
 --log_freq 25
@@ -30,3 +32,4 @@
 --min_depth_eval 1e-3
 --max_depth_eval 10
 --eigen_crop
+--use_wandb

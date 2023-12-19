@@ -4,18 +4,22 @@ import torch.nn.utils as utils
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.multiprocessing as mp
+import wandb
 
 import os, sys, time
 from telnetlib import IP
 import argparse
 import numpy as np
 from tqdm import tqdm
+from dataloaders.dataloader import ToTensor
+from PIL import Image
+import matplotlib.pyplot as plt
 
-from tensorboardX import SummaryWriter
+# from tensorboardX import SummaryWriter
 
 from utils import compute_errors, eval_metrics, \
                        block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args
-from networks.vadepthnet import VADepthNet
+from networks.vadepthnet import VADepthNet, VAFlowNet, WindowVADepthNet
 
 
 parser = argparse.ArgumentParser(description='VADepthNet PyTorch implementation.', fromfile_prefix_chars='@')
@@ -23,6 +27,9 @@ parser.convert_arg_line_to_args = convert_arg_line_to_args
 
 parser.add_argument('--mode',                      type=str,   help='train or test', default='train')
 parser.add_argument('--model_name',                type=str,   help='model name', default='vadepthnet')
+parser.add_argument('--use_self_attention',                    help='Use self attention on depths', action='store_true')
+parser.add_argument('--depth_resnet_connection',               help='Use vlayer and flayer', action='store_true')
+parser.add_argument('--window_size',               type=int,   help='window size', default=1)
 parser.add_argument('--pretrain',                  type=str,   help='path of pretrained encoder', default=None)
 
 # Dataset
@@ -40,6 +47,7 @@ parser.add_argument('--log_directory',             type=str,   help='directory t
 parser.add_argument('--checkpoint_path',           type=str,   help='path to a checkpoint to load', default='')
 parser.add_argument('--log_freq',                  type=int,   help='Logging frequency in global steps', default=100)
 parser.add_argument('--save_freq',                 type=int,   help='Checkpoint saving frequency in global steps', default=5000)
+parser.add_argument('--use_wandb',                             help='Save logs in wandb', action='store_true')
 
 # Training
 parser.add_argument('--weight_decay',              type=float, help='weight decay factor for optimization', default=1e-2)
@@ -77,6 +85,7 @@ parser.add_argument('--min_depth_eval',            type=float, help='minimum dep
 parser.add_argument('--max_depth_eval',            type=float, help='maximum depth for evaluation', default=80)
 parser.add_argument('--eigen_crop',                            help='if set, crops according to Eigen NIPS14', action='store_true')
 parser.add_argument('--garg_crop',                             help='if set, crops according to Garg  ECCV16', action='store_true')
+parser.add_argument('--vis_freq',                  type=int,   help='Visualization Frequency in global steps', default=100)
 parser.add_argument('--eval_freq',                 type=int,   help='Online evaluation frequency in global steps', default=500)
 parser.add_argument('--eval_summary_directory',    type=str,   help='output directory for eval summary,'
                                                                     'if empty outputs to checkpoint folder', default='')
@@ -176,11 +185,42 @@ def main_worker(gpu, ngpus_per_node, args):
         if args.multiprocessing_distributed:
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
+    
+    if args.use_wandb:
+        if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+            wandb.init(
+                entity = "nyu_chanukya",
+                project="monocular-depth-estimation",
+                config = args,
+            )
+    
+    swin_type = args.pretrain.split("/")[-1].split("_")[1]
+    if not swin_type in ["tiny", "small", "large"]:
+        raise ValueError(f"Invalid swin model type {swin_type}!")
 
-    model = VADepthNet(pretrained=args.pretrain,
-                       max_depth=args.max_depth,
-                       prior_mean=args.prior_mean,
-                       img_size=(args.input_height, args.input_width))
+    if args.model_name == "vadepthnet":
+        model = VADepthNet(pretrained=args.pretrain,
+                        max_depth=args.max_depth,
+                        prior_mean=args.prior_mean,
+                        img_size=(args.input_height, args.input_width),
+                        swin_type=swin_type)
+    elif args.model_name == "windowvadepthnet":
+        model = WindowVADepthNet(pretrained=args.pretrain,
+                        max_depth=args.max_depth,
+                        prior_mean=args.prior_mean,
+                        img_size=(args.input_height, args.input_width),
+                        swin_type=swin_type,
+                        window_size_directions=args.window_size)
+    elif args.model_name == "vaflownet":
+        model = VAFlowNet(pretrained=args.pretrain,
+                        max_depth=args.max_depth,
+                        prior_mean=args.prior_mean,
+                        img_size=(args.input_height, args.input_width),
+                        swin_type=swin_type,
+                        depth_resnet_connection=args.depth_resnet_connection,
+                        use_self_attention=args.use_self_attention)
+    else:
+        raise ValueError(f"Invalid model name {args.model_name}")
     model.train()
 
     num_params = sum([np.prod(p.size()) for p in model.parameters()])
@@ -256,13 +296,13 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # Logging
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-        writer = SummaryWriter(args.log_directory + '/' + args.model_name + '/summaries', flush_secs=30)
+        # writer = SummaryWriter(args.log_directory + '/' + args.model_name + '/summaries', flush_secs=30)
         if args.do_online_eval:
             if args.eval_summary_directory != '':
                 eval_summary_path = os.path.join(args.eval_summary_directory, args.model_name)
             else:
                 eval_summary_path = os.path.join(args.log_directory, args.model_name, 'eval')
-            eval_summary_writer = SummaryWriter(eval_summary_path, flush_secs=30)
+            # eval_summary_writer = SummaryWriter(eval_summary_path, flush_secs=30)
 
     #silog_criterion = silog_loss(variance_focus=args.variance_focus)
 
@@ -293,7 +333,8 @@ def main_worker(gpu, ngpus_per_node, args):
             image = torch.autograd.Variable(sample_batched['image'].cuda(args.gpu, non_blocking=True))
             depth_gt = torch.autograd.Variable(sample_batched['depth'].cuda(args.gpu, non_blocking=True))
 
-            depth_est, loss = model(image, depth_gt)
+            depth_est, loss_dict = model(image, depth_gt)
+            loss = sum(loss_dict.values())
 
             loss.backward()
 
@@ -309,18 +350,83 @@ def main_worker(gpu, ngpus_per_node, args):
 
 
             duration += time.time() - before_op_time
-            if global_step and global_step % args.log_freq == 0 and not model_just_loaded and gpu == 0:
-
+            if global_step % args.log_freq == 0 and gpu == 0:
                 print('epoch:', epoch, 'global_step:', global_step, 'loss:', loss.item(), 'duration:', duration, flush=True)
+                if args.use_wandb:
+                    log_dict = {"train_loss": loss.item(), "epoch": epoch, "duration": duration}
+                    for k, v in loss_dict.items():
+                        log_dict[k] = v.item()
+                    wandb.log(log_dict, step=int(global_step))
+            
+            # if global_step and global_step % args.vis_freq == 0 and gpu == 0:
+            if global_step % args.vis_freq == 0 and gpu == 0:
+                image_paths = [
+                    '../dataset/nyu_depth_v2/sync/cafe_0001a/rgb_00021.jpg',
+                    '../dataset/nyu_depth_v2/official_splits/test/living_room/rgb_00210.jpg',
+                    '../dataset/nyu_depth_v2/official_splits/test/home_office/rgb_00360.jpg'
+                ]
 
+                totensor = ToTensor('test')
+                original_images = []
+                images = []
+                for image_path in image_paths:
+                    original_img = Image.open(image_path)
+                    original_images.append(original_img)
+
+                    img = np.asarray(original_img, dtype=np.float32) / 255.0
+                    img = totensor.to_tensor(img)
+                    img = totensor.normalize(img)
+                    images.append(img.unsqueeze(0))
+
+                batch_tensor = torch.cat(images, dim=0).cuda()
+
+                # Model forward pass in batch
+                model.eval()
+                with torch.no_grad():
+                    pdepth_batch = model(batch_tensor)
+                model.train()
+
+                combined_images = []
+                for i, original_img in enumerate(original_images):
+                    pdepth_np = pdepth_batch[i].squeeze().cpu().detach().numpy()
+                    pdepth_np = (pdepth_np - pdepth_np.min()) / (pdepth_np.max() - pdepth_np.min())  # Normalize
+                    pdepth_np = 1.0 - pdepth_np
+
+                    depth_colormap = plt.get_cmap('plasma')(pdepth_np)[:, :, :3]
+                    depth_colormap = (depth_colormap * 255).astype(np.uint8)
+                    depth_colormap = Image.fromarray(depth_colormap).resize(original_img.size, Image.BILINEAR)
+
+                    combined_image = Image.new('RGB', (original_img.width + depth_colormap.width, original_img.height))
+                    combined_image.paste(original_img, (0, 0))
+                    combined_image.paste(depth_colormap, (original_img.width, 0))
+
+                    combined_images.append(combined_image)
+
+                # Combine all images side by side
+                total_width = sum(image.width for image in combined_images)
+                max_height = max(image.height for image in combined_images)
+                final_image = Image.new('RGB', (total_width, max_height))
+
+                x_offset = 0
+                for image in combined_images:
+                    final_image.paste(image, (x_offset, 0))
+                    x_offset += image.width
+
+                # Log the final combined image to wandb
+                if args.use_wandb:
+                    wandb.log({"Combined Image": [wandb.Image(final_image, caption="Original and Depth Side by Side")]}, step=int(global_step))
+
+            # if args.do_online_eval and global_step and global_step % args.eval_freq == 0 and not model_just_loaded:
             if args.do_online_eval and global_step and global_step % args.eval_freq == 0 and not model_just_loaded:
                 time.sleep(0.1)
                 model.eval()
                 with torch.no_grad():
                     eval_measures = online_eval(model, dataloader_eval, gpu, ngpus_per_node, post_process=False)
                 if eval_measures is not None:
-                    for i in range(9):
-                        eval_summary_writer.add_scalar(eval_metrics[i], eval_measures[i].cpu(), int(global_step))
+                    for i in range(len(eval_metrics)):
+                        # eval_summary_writer.add_scalar(eval_metrics[i], eval_measures[i].cpu(), int(global_step))
+                        if args.use_wandb:
+                            wandb.log({eval_metrics[i]: eval_measures[i].cpu().item()}, step=int(global_step))
                         measure = eval_measures[i]
                         is_best = False
                         if i < 6 and measure < best_eval_measures_lower_better[i]:
@@ -343,13 +449,13 @@ def main_worker(gpu, ngpus_per_node, args):
                             print('New best for {}. Saving model: {}'.format(eval_metrics[i], model_save_name))
                             checkpoint = {'global_step': global_step,
                                           'model': model.state_dict(),
-                                          #'optimizer': optimizer.state_dict(),
+                                          'optimizer': optimizer.state_dict(),
                                           'best_eval_measures_higher_better': best_eval_measures_higher_better,
                                           'best_eval_measures_lower_better': best_eval_measures_lower_better,
                                           'best_eval_steps': best_eval_steps
                                           }
                             torch.save(checkpoint, args.log_directory + '/' + args.model_name + model_save_name)
-                    eval_summary_writer.flush()
+                    # eval_summary_writer.flush()
                 model.train()
                 block_print()
                 enable_print()
@@ -359,10 +465,10 @@ def main_worker(gpu, ngpus_per_node, args):
 
         epoch += 1
        
-    if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-        writer.close()
-        if args.do_online_eval:
-            eval_summary_writer.close()
+    # if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+    #     writer.close()
+    #     if args.do_online_eval:
+    #         eval_summary_writer.close()
 
 
 def main():
@@ -370,8 +476,8 @@ def main():
         print('train.py is only for training.')
         return -1
 
-    command = 'mkdir ' + os.path.join(args.log_directory, args.model_name)
-    os.system(command)
+    log_directory_path = os.path.join(args.log_directory, args.model_name)
+    os.makedirs(log_directory_path, exist_ok=True)
 
     args_out_path = os.path.join(args.log_directory, args.model_name)
     command = 'cp ' + sys.argv[1] + ' ' + args_out_path
